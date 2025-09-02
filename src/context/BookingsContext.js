@@ -1,4 +1,4 @@
-// src/context/BookingsContext.js - Enhanced with API Integration and User Authentication
+// src/context/BookingsContext.js - Enhanced with Auto-Refresh and Immediate UI Updates
 import React, { createContext, useContext, useReducer, useEffect } from 'react';
 import ApiService from '../services/api';
 
@@ -8,7 +8,8 @@ const initialState = {
   currentBookings: [],
   pastBookings: [],
   loading: false,
-  error: null
+  error: null,
+  lastUpdated: null
 };
 
 const bookingsReducer = (state, action) => {
@@ -17,28 +18,33 @@ const bookingsReducer = (state, action) => {
       return { ...state, loading: action.payload };
 
     case 'SET_ERROR':
-      return { ...state, error: action.payload };
+      return { ...state, error: action.payload, loading: false };
 
     case 'SET_BOOKINGS':
       return {
         ...state,
         currentBookings: action.payload.current || [],
         pastBookings: action.payload.past || [],
-        error: null
+        error: null,
+        loading: false,
+        lastUpdated: Date.now()
       };
 
     case 'ADD_BOOKING':
       return {
         ...state,
-        currentBookings: [...state.currentBookings, action.payload],
-        error: null
+        currentBookings: [action.payload, ...state.currentBookings],
+        error: null,
+        lastUpdated: Date.now()
       };
 
+    // ✅ CRITICAL FIX: Immediate UI update for multiple bookings
     case 'ADD_MULTIPLE_BOOKINGS':
       return {
         ...state,
-        currentBookings: [...state.currentBookings, ...action.payload],
-        error: null
+        currentBookings: [...action.payload, ...state.currentBookings],
+        error: null,
+        lastUpdated: Date.now()
       };
 
     case 'CANCEL_BOOKING':
@@ -48,7 +54,8 @@ const bookingsReducer = (state, action) => {
           booking.id === action.payload
             ? { ...booking, status: 'cancelled' }
             : booking
-        )
+        ),
+        lastUpdated: Date.now()
       };
 
     case 'MOVE_TO_PAST':
@@ -57,7 +64,8 @@ const bookingsReducer = (state, action) => {
         return {
           ...state,
           currentBookings: state.currentBookings.filter(b => b.id !== action.payload),
-          pastBookings: [...state.pastBookings, { ...bookingToMove, status: 'completed' }]
+          pastBookings: [...state.pastBookings, { ...bookingToMove, status: 'completed' }],
+          lastUpdated: Date.now()
         };
       }
       return state;
@@ -65,10 +73,14 @@ const bookingsReducer = (state, action) => {
     case 'REFRESH_BOOKINGS':
       return {
         ...state,
-        currentBookings: [],
-        pastBookings: [],
         loading: true,
         error: null
+      };
+
+    case 'FORCE_UPDATE':
+      return {
+        ...state,
+        lastUpdated: Date.now()
       };
 
     case 'RESET_ALL':
@@ -76,7 +88,8 @@ const bookingsReducer = (state, action) => {
         currentBookings: [],
         pastBookings: [],
         loading: false,
-        error: null
+        error: null,
+        lastUpdated: null
       };
 
     default:
@@ -85,12 +98,10 @@ const bookingsReducer = (state, action) => {
 };
 
 export const BookingsProvider = ({ children }) => {
-  // ✅ FIXED: dispatch is now properly scoped within the component
   const [state, dispatch] = useReducer(bookingsReducer, initialState);
 
-  // ✅ Load user-specific bookings from API
-  const loadBookings = async () => {
-    // Only load bookings if user is authenticated
+  // ✅ Enhanced load bookings with force refresh capability
+  const loadBookings = async (forceRefresh = false) => {
     if (!ApiService.isAuthenticated()) {
       dispatch({ type: 'SET_BOOKINGS', payload: { current: [], past: [] } });
       return;
@@ -98,7 +109,8 @@ export const BookingsProvider = ({ children }) => {
 
     dispatch({ type: 'SET_LOADING', payload: true });
     try {
-      console.log('🔄 Loading user bookings from API...');
+      console.log('🔄 Loading user bookings from API...', forceRefresh ? '(force refresh)' : '');
+      
       const [currentBookings, pastBookings] = await Promise.all([
         ApiService.getCurrentBookings(),
         ApiService.getPastBookings()
@@ -124,7 +136,7 @@ export const BookingsProvider = ({ children }) => {
     }
   };
 
-  // ✅ Load bookings when component mounts or authentication changes
+  // ✅ Load bookings when component mounts
   useEffect(() => {
     loadBookings();
   }, []);
@@ -134,7 +146,10 @@ export const BookingsProvider = ({ children }) => {
     try {
       console.log('🏨 Creating new booking:', bookingData.hotel_name);
       const createdBooking = await ApiService.createBooking(bookingData);
+      
+      // ✅ Immediate UI update
       dispatch({ type: 'ADD_BOOKING', payload: createdBooking });
+      
       console.log('✅ Booking created successfully:', createdBooking.id);
       return { success: true, booking: createdBooking };
     } catch (error) {
@@ -144,13 +159,13 @@ export const BookingsProvider = ({ children }) => {
     }
   };
 
-  // ✅ Add multiple bookings to API and state
+  // ✅ CRITICAL FIX: Add multiple bookings with immediate UI update
   const addMultipleBookings = async (bookingsArray) => {
     try {
       console.log(`🏨 Creating ${bookingsArray.length} bookings...`);
       const createdBookings = [];
 
-      // ✅ FIXED: Create bookings individually with better error handling
+      // Create bookings individually with better error handling
       for (const bookingData of bookingsArray) {
         try {
           // Validate booking data before sending
@@ -169,8 +184,16 @@ export const BookingsProvider = ({ children }) => {
       }
 
       if (createdBookings.length > 0) {
+        // ✅ IMMEDIATE UI UPDATE: Update state immediately
         dispatch({ type: 'ADD_MULTIPLE_BOOKINGS', payload: createdBookings });
-        console.log(`✅ ${createdBookings.length} bookings created successfully`);
+        
+        // ✅ BACKGROUND REFRESH: Also refresh from server after a delay to ensure consistency
+        setTimeout(() => {
+          console.log('🔄 Background refresh of bookings...');
+          loadBookings(true);
+        }, 2000);
+        
+        console.log(`✅ ${createdBookings.length} bookings created and UI updated immediately`);
         return { success: true, bookings: createdBookings };
       } else {
         throw new Error('Failed to create any bookings');
@@ -189,9 +212,11 @@ export const BookingsProvider = ({ children }) => {
       await ApiService.cancelBooking(bookingId);
       dispatch({ type: 'CANCEL_BOOKING', payload: bookingId });
       console.log('✅ Booking cancelled successfully');
+      return { success: true };
     } catch (error) {
       console.error('❌ Error cancelling booking:', error);
       dispatch({ type: 'SET_ERROR', payload: error.message });
+      return { success: false, error: error.message };
     }
   };
 
@@ -200,11 +225,15 @@ export const BookingsProvider = ({ children }) => {
     dispatch({ type: 'MOVE_TO_PAST', payload: bookingId });
   };
 
-  // ✅ Refresh bookings from API
-  const refreshBookings = () => {
-    console.log('🔄 Refreshing bookings...');
-    dispatch({ type: 'REFRESH_BOOKINGS' });
-    loadBookings();
+  // ✅ ENHANCED: Force refresh bookings from API
+  const refreshBookings = async () => {
+    console.log('🔄 Force refreshing bookings...');
+    await loadBookings(true);
+  };
+
+  // ✅ NEW: Force UI update (trigger re-render)
+  const forceUpdate = () => {
+    dispatch({ type: 'FORCE_UPDATE' });
   };
 
   // ✅ Clear error state
@@ -255,13 +284,21 @@ export const BookingsProvider = ({ children }) => {
     return currentBooking || pastBooking || null;
   };
 
-  // ✅ Context value with all methods and data
+  // ✅ NEW: Check if bookings are fresh (within last 30 seconds)
+  const areBookingsFresh = () => {
+    if (!state.lastUpdated) return false;
+    const thirtySeconds = 30 * 1000;
+    return (Date.now() - state.lastUpdated) < thirtySeconds;
+  };
+
+  // ✅ Enhanced context value with new methods
   const value = {
     // State
     currentBookings: state.currentBookings,
     pastBookings: state.pastBookings,
     loading: state.loading,
     error: state.error,
+    lastUpdated: state.lastUpdated,
 
     // Actions
     addBooking,
@@ -271,12 +308,14 @@ export const BookingsProvider = ({ children }) => {
     refreshBookings,
     clearError,
     resetBookingsContext,
+    forceUpdate,
 
     // Utilities
     getBookingStats,
     getTotalSpending,
     findBookingById,
-    loadBookings
+    loadBookings,
+    areBookingsFresh
   };
 
   return (
