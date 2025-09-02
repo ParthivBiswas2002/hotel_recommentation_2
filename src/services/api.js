@@ -1,6 +1,6 @@
 // src/services/api.js - Enhanced with JWT Token Management, User-Specific Data, and Cart Support
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://backend-service-907345455681.us-central1.run.app';
 
 class ApiService {
   constructor() {
